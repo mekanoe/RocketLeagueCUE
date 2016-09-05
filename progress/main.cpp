@@ -71,47 +71,27 @@ HANDLE initProcessHandle()
 	return OpenProcess(PROCESS_VM_READ, true, procId);
 }
 
-DWORD_PTR GetProcessBaseAddress()
+void* GetProcessBaseAddress() //i can't guarantee that this algorithm is faster butit is shorter :P
 {
-	DWORD processID = getProcessId();
-	DWORD_PTR   baseAddress = 0;
-	HANDLE      processHandle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processID);
-	HMODULE     *moduleArray;
-	LPBYTE      moduleArrayBytes;
-	DWORD       bytesRequired;
+	HANDLE      processHandle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, getProcessId());
+	void*     moduleArray;
+	unsigned long* dataSize = new unsigned long;
 
 	if (processHandle)
 	{
-		if (EnumProcessModules(processHandle, NULL, 0, &bytesRequired))
+		if (EnumProcessModules(processHandle, (HMODULE*)&moduleArray, sizeof(void*), dataSize))
 		{
-			if (bytesRequired)
-			{
-				moduleArrayBytes = (LPBYTE)LocalAlloc(LPTR, bytesRequired);
-
-				if (moduleArrayBytes)
-				{
-					unsigned int moduleCount;
-
-					moduleCount = bytesRequired / sizeof(HMODULE);
-					moduleArray = (HMODULE *)moduleArrayBytes;
-
-					if (EnumProcessModules(processHandle, moduleArray, bytesRequired, &bytesRequired))
-					{
-						baseAddress = (DWORD_PTR)moduleArray[0];
-					}
-
-					LocalFree(moduleArrayBytes);
-				}
-			}
+			delete dataSize;
+			return moduleArray;
 		}
 
+		delete dataSize;
 		CloseHandle(processHandle);
 	}
-
-	return baseAddress;
+	return nullptr;
 }
 
-int getRocketLeagueTurbo(HANDLE h, INT_PTR p) 
+int getRocketLeagueTurbo(HANDLE h, void* p) 
 {
 	if (h == NULL || p == 0) {
 		// handler isn't initalized,
@@ -133,13 +113,12 @@ int getRocketLeagueTurbo(HANDLE h, INT_PTR p)
 int getRocketLeagueTurboPointer(HANDLE h) {
 
 	if (h == NULL) {
-		// handler isn't initalized,
-		// rocket league probs isn't open.
+		// handler isn't initalized
 		return 0;
 	}
 	//+015817E0+120+50+6f4+21c
-	std::cout << std::endl << std::hex << (INT_PTR)(GetProcessBaseAddress()) << std::endl;
-	INT_PTR base = (INT_PTR)(GetProcessBaseAddress()) + 0x0062465C;
+	std::cout << std::endl << std::hex << GetProcessBaseAddress() << std::endl;
+	int base = (int)GetProcessBaseAddress() + 0x0062465C;
 
 	int offsets[6] = { 0x4A0, 0x54, 0x4C, 0x520, 0x54 };
 
@@ -150,11 +129,13 @@ int getRocketLeagueTurboPointer(HANDLE h) {
 	addr = b;
 	//cout
 
-	for (int i = 0; i < 7; ++i) {
+	int i(0);
+	for (int off : offsets) {
 		int b;
-		ReadProcessMemory(h, (LPVOID)(addr + offsets[i]), &b, 4, 0);
-		addr = addr + b;
-		std::cout << i << " = " << std::hex << b << "+" << std::hex << offsets[i] << " so addr is now " << std::hex << addr << std::endl;
+		ReadProcessMemory(h, (LPVOID)(addr + off), &b, 4, 0);
+		addr += b;
+		std::cout << i << " = " << std::hex << b << "+" << std::hex << off << " so addr is now " << std::hex << addr << std::endl;
+		i++;
 	}
 
 	return addr;
@@ -174,10 +155,9 @@ int main()
 {
 	HANDLE handle = NULL;
 	UINT_PTR pointer = 0;
-	bool cantfind = false;
-
+	
 	CorsairPerformProtocolHandshake();
-	if (const auto error = CorsairGetLastError()) {
+	if (const CorsairError error = CorsairGetLastError()) {
 		std::cout << "Handshake failed: " << toString(error) << std::endl;
 		getchar();
 		return -1;
@@ -186,40 +166,38 @@ int main()
 	const auto ledPositions = CorsairGetLedPositions();
 	if (ledPositions && ledPositions->numberOfLed > 0) {
 				
-		const auto keyboardWidth = getKeyboardWidth(ledPositions);
-		const auto numberOfSteps = 100;
+		const double keyboardWidth = getKeyboardWidth(ledPositions);
+		const int numberOfSteps = 100;
 		std::cout << "Working... Press Escape to close program..." << std::endl << std::endl;
-		for (auto n = 0; !GetAsyncKeyState(VK_ESCAPE); n++) {
+		while(!GetAsyncKeyState(VK_ESCAPE)) { //fixed that infinite counter
 			
 			if (handle == NULL) {
 				handle = initProcessHandle();
 				pointer = getRocketLeagueTurboPointer(handle);
-				if (handle == NULL && cantfind == false) {
+				if (handle == NULL) {
 					std::cout << "Can't find Rocket League. Please start the gaaaaame!" << std::endl;
-					cantfind = true;
+					std::this_thread::sleep_for(std::chrono::seconds(5)); //give the game time to open
+					continue;
 				}
-			}
-
-			if (cantfind && handle != NULL) {
-				std::cout << "Found Rocket League!" << std::endl;
-				cantfind = false;
+				else
+					std::cout << "Found Rocket League!" << std::endl;
 			}
 
 			// XXX: Get this value repeatably. I suck at it.
 			// For demos, I used cheat engine to grab the memory locations.
-			auto percentage = getRocketLeagueTurbo(handle, 0x32E1FC8C);
-
+			auto percentage = getRocketLeagueTurbo(handle, (void*)0x32E1FC8C);
+			
 			std::vector<CorsairLedColor> vec;
 			//const auto currWidth = double(keyboardWidth) * (n % (numberOfSteps + 1)) / numberOfSteps;
 			const auto currWidth = double(keyboardWidth) * percentage / numberOfSteps;
 
 			for (auto i = 0; i < ledPositions->numberOfLed; i++) {
-				const auto ledPos = ledPositions->pLedPosition[i];
-				auto ledColor = CorsairLedColor();
+				const CorsairLedPosition ledPos = ledPositions->pLedPosition[i];
+				CorsairLedColor ledColor = CorsairLedColor();
 				ledColor.ledId = ledPos.ledId;
 				if (ledPos.left < currWidth) {
 
-					auto posPct = ledPos.left / double(keyboardWidth) * 100;
+					double posPct = ledPos.left / keyboardWidth * 100;
 					
 					ledColor.r = 255;
 					ledColor.g = 145;
@@ -240,11 +218,9 @@ int main()
 				vec.push_back(ledColor);
 			}
 			CorsairSetLedsColors(vec.size(), vec.data());
-
+			
 			std::this_thread::sleep_for(std::chrono::milliseconds(75));
-			//std::this_thread::sleep_for(std::chrono::seconds(1));
 		}// <3
 	}
 	return 0;
 }
-
